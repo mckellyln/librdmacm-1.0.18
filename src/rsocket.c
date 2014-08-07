@@ -38,6 +38,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
 #include <stdarg.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -2320,6 +2321,28 @@ static ssize_t rs_peek(struct rsocket *rs, void *buf, size_t len)
 }
 
 /*
+ * MCK - add support for ioctl(socket, FIONREAD, &avail) ...
+ */
+int rioctl_fionread(int socket, int *avail)
+{
+	struct rsocket *rs;
+	int rmsg_head;
+
+	rs = idm_at(&idm, socket);
+
+	*avail = 0;
+	rmsg_head = rs->rmsg_head;
+
+	while (rmsg_head != rs->rmsg_tail) {
+		*avail += rs->rmsg[rmsg_head].data;
+		if (++rmsg_head == rs->rq_size + 1)
+			rmsg_head = 0;
+	}
+
+	return 0;
+}
+
+/*
  * Continue to receive any queued data even if the remote side has disconnected.
  */
 ssize_t rrecv(int socket, void *buf, size_t len, int flags)
@@ -3559,11 +3582,20 @@ int rfcntl(int socket, int cmd, ... /* arg */ )
 		break;
 	case F_SETFL:
 		param = va_arg(args, long);
-		if (param & O_NONBLOCK)
-			ret = rs_set_nonblocking(rs, O_NONBLOCK);
 
-		if (!ret)
-			rs->fd_flags |= param;
+		/*
+		 * MCK - handle unsetting O_NONBLOCK as well ...
+		 */
+		if (param & O_NONBLOCK) {
+			ret = rs_set_nonblocking(rs, O_NONBLOCK);
+			if (!ret)
+				rs->fd_flags |= O_NONBLOCK;
+		} else {
+			ret = rs_set_nonblocking(rs, 0);
+			if (!ret)
+				rs->fd_flags &= ~O_NONBLOCK;
+		}
+
 		break;
 	default:
 		ret = ERR(ENOTSUP);
